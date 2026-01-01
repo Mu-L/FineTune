@@ -16,10 +16,9 @@ final class ProcessTapController {
     // Current interpolated volume (audio thread only, ramps toward _volume)
     private nonisolated(unsafe) var _currentVolume: Float = 1.0
 
-    // Ramp coefficient for ~30ms smoothing at 48kHz
+    // Ramp coefficient for ~30ms smoothing, computed from device sample rate on activation
     // Formula: 1 - exp(-1 / (sampleRate * rampTimeSeconds))
-    // Conservative value works across 44.1kHz-96kHz sample rates
-    private let rampCoefficient: Float = 0.0007
+    private var rampCoefficient: Float = 0.0007  // Default, updated on activation
 
     var volume: Float {
         get { _volume }
@@ -97,6 +96,12 @@ final class ProcessTapController {
         }
 
         logger.debug("Created aggregate device #\(self.aggregateDeviceID)")
+
+        // Compute ramp coefficient from actual device sample rate
+        let sampleRate = (try? aggregateDeviceID.readNominalSampleRate()) ?? 48000
+        let rampTimeSeconds: Float = 0.030  // 30ms smoothing
+        rampCoefficient = 1 - exp(-1 / (Float(sampleRate) * rampTimeSeconds))
+        logger.debug("Ramp coefficient: \(self.rampCoefficient) for sample rate \(sampleRate)")
 
         // Create IO proc with gain processing
         err = AudioDeviceCreateIOProcIDWithBlock(&deviceProcID, aggregateDeviceID, queue) { [weak self] inNow, inInputData, inInputTime, outOutputData, inOutputTime in
