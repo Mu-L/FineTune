@@ -29,6 +29,13 @@ struct AppVolumeRowView: View {
 
             Slider(value: $sliderValue, in: 0...1)
                 .frame(minWidth: 100)
+                .overlay(alignment: .center) {
+                    // Unity marker at center (100% = native volume)
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.4))
+                        .frame(width: 1, height: 8)
+                        .allowsHitTesting(false)
+                }
                 .onChange(of: sliderValue) { _, newValue in
                     let gain = VolumeMapping.sliderToGain(newValue)
                     onVolumeChange(gain)
