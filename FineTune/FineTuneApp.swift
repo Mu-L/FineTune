@@ -1,17 +1,14 @@
-//
-//  FineTuneApp.swift
-//  FineTune
-//
-//  Created by Ronit Singh on 12/31/25.
-//
-
+// FineTune/FineTuneApp.swift
 import SwiftUI
 
 @main
 struct FineTuneApp: App {
+    @State private var audioEngine = AudioEngine()
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra("FineTune", systemImage: "slider.horizontal.3") {
+            MenuBarPopupView(audioEngine: audioEngine)
         }
+        .menuBarExtraStyle(.window)
     }
 }
