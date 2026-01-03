@@ -689,8 +689,10 @@ final class ProcessTapController {
                 let effectiveCompensation: Float = _isCrossfading ? 1.0 : _deviceVolumeCompensation
                 var sample = inputSamples[i] * currentVol * crossfadeMultiplier * effectiveCompensation
 
-                // Soft-knee limiter (prevents harsh clipping when boosting)
-                sample = softLimit(sample)
+                // Soft-knee limiter only when boosting (saves CPU at normal volumes)
+                if targetVol > 1.0 {
+                    sample = softLimit(sample)
+                }
 
                 outputSamples[i] = sample
             }
@@ -745,8 +747,10 @@ final class ProcessTapController {
                 // Apply ramped gain with crossfade multiplier and device volume compensation
                 var sample = inputSamples[i] * currentVol * crossfadeMultiplier * _deviceVolumeCompensation
 
-                // Soft-knee limiter
-                sample = softLimit(sample)
+                // Soft-knee limiter only when boosting (saves CPU at normal volumes)
+                if targetVol > 1.0 {
+                    sample = softLimit(sample)
+                }
 
                 outputSamples[i] = sample
             }
