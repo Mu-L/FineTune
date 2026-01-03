@@ -22,6 +22,57 @@ final class AudioProcessMonitor {
         mElement: kAudioObjectPropertyElementMain
     )
 
+    /// Function type for the private responsibility API
+    private typealias ResponsibilityFunc = @convention(c) (pid_t) -> pid_t
+
+    /// Gets the "responsible" PID for a process using Apple's private API.
+    /// This is what Activity Monitor uses to show the correct parent for XPC services.
+    private func getResponsiblePID(for pid: pid_t) -> pid_t? {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -1), "responsibility_get_pid_responsible_for_pid") else {
+            return nil
+        }
+        let responsiblePID = unsafeBitCast(symbol, to: ResponsibilityFunc.self)(pid)
+        return responsiblePID > 0 && responsiblePID != pid ? responsiblePID : nil
+    }
+
+    /// Finds the responsible application for a helper/XPC process.
+    /// Uses Apple's responsibility API first, falls back to process tree walking.
+    private func findResponsibleApp(for pid: pid_t, in runningApps: [NSRunningApplication]) -> NSRunningApplication? {
+        // First try Apple's responsibility API (works for XPC services like Safari's WebKit processes)
+        if let responsiblePID = getResponsiblePID(for: pid),
+           let app = runningApps.first(where: { $0.processIdentifier == responsiblePID }),
+           app.bundleURL?.pathExtension == "app" {
+            return app
+        }
+
+        // Fall back to walking up the process tree (works for Chrome/Brave helpers)
+        var currentPID = pid
+        var visited = Set<pid_t>()
+
+        while currentPID > 1 && !visited.contains(currentPID) {
+            visited.insert(currentPID)
+
+            // Check if this PID is a proper app bundle (.app, not .xpc service)
+            if let app = runningApps.first(where: { $0.processIdentifier == currentPID }),
+               app.bundleURL?.pathExtension == "app" {
+                return app
+            }
+
+            // Get parent PID using sysctl
+            var info = kinfo_proc()
+            var size = MemoryLayout<kinfo_proc>.size
+            var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, currentPID]
+
+            guard sysctl(&mib, 4, &info, &size, nil, 0) == 0 else { break }
+
+            let parentPID = info.kp_eproc.e_ppid
+            if parentPID == currentPID { break }
+            currentPID = parentPID
+        }
+
+        return nil
+    }
+
     func start() {
         guard processListListenerBlock == nil else { return }
 
@@ -74,11 +125,21 @@ final class AudioProcessMonitor {
                 guard objectID.readProcessIsRunning() else { continue }
                 guard let pid = try? objectID.readProcessPID(), pid != myPID else { continue }
 
-                let bundleID = objectID.readProcessBundleID()
-                let runningApp = runningApps.first { $0.processIdentifier == pid }
+                // Try to find the parent app (for helper processes like Safari Graphics and Media)
+                let directApp = runningApps.first { $0.processIdentifier == pid }
 
-                let name = runningApp?.localizedName ?? bundleID?.components(separatedBy: ".").last ?? "Unknown"
-                let icon = runningApp?.icon ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil) ?? NSImage()
+                // Check if it's a real app bundle (.app), not an XPC service (.xpc)
+                let isRealApp = directApp?.bundleURL?.pathExtension == "app"
+                let resolvedApp = isRealApp ? directApp : findResponsibleApp(for: pid, in: runningApps)
+
+                // Use resolved app's info, fall back to Core Audio bundle ID
+                let name = resolvedApp?.localizedName
+                    ?? objectID.readProcessBundleID()?.components(separatedBy: ".").last
+                    ?? "Unknown"
+                let icon = resolvedApp?.icon
+                    ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
+                    ?? NSImage()
+                let bundleID = resolvedApp?.bundleIdentifier ?? objectID.readProcessBundleID()
 
                 let app = AudioApp(
                     id: pid,
