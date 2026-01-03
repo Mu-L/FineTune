@@ -124,9 +124,17 @@ final class AudioDeviceMonitor {
         disconnectTimers[deviceUID]?.cancel()
 
         disconnectTimers[deviceUID] = Task { [weak self, gracePeriodSeconds] in
+            defer {
+                // Always clean up timer entry to prevent memory leak
+                Task { @MainActor [weak self] in
+                    self?.disconnectTimers.removeValue(forKey: deviceUID)
+                }
+            }
+
             do {
                 try await Task.sleep(for: .seconds(gracePeriodSeconds))
             } catch {
+                // Cancelled (device reconnected or monitor stopped)
                 return
             }
 
@@ -135,7 +143,6 @@ final class AudioDeviceMonitor {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.logger.info("Grace period expired for device: \(deviceUID), triggering fallback")
-                self.disconnectTimers.removeValue(forKey: deviceUID)
                 self.onDeviceDisconnected?(deviceUID)
             }
         }
