@@ -804,49 +804,56 @@ final class ProcessTapController {
 
     func invalidate() {
         guard activated else { return }
-        defer { activated = false }
+        activated = false
 
         logger.debug("Invalidating tap for \(self.app.name)")
 
         // Stop crossfade immediately if in progress
         _isCrossfading = false
 
-        // Clean up secondary resources if they exist (mid-crossfade termination)
-        if secondaryAggregateID.isValid {
-            AudioDeviceStop(secondaryAggregateID, secondaryDeviceProcID)
-            if let procID = secondaryDeviceProcID {
-                AudioDeviceDestroyIOProcID(secondaryAggregateID, procID)
-            }
-            AudioHardwareDestroyAggregateDevice(secondaryAggregateID)
-            secondaryAggregateID = .unknown
-        }
-        if secondaryTapID.isValid {
-            AudioHardwareDestroyProcessTap(secondaryTapID)
-            secondaryTapID = .unknown
-        }
+        // Capture all IDs before clearing - teardown happens on background queue
+        // to avoid blocking main thread (AudioDeviceDestroyIOProcID blocks until callback finishes)
+        let primaryAggregate = aggregateDeviceID
+        let primaryProcID = deviceProcID
+        let primaryTap = processTapID
+        let secAggregate = secondaryAggregateID
+        let secProcID = secondaryDeviceProcID
+        let secTap = secondaryTapID
+
+        // Clear instance state immediately
+        aggregateDeviceID = .unknown
+        deviceProcID = nil
+        processTapID = .unknown
+        secondaryAggregateID = .unknown
         secondaryDeviceProcID = nil
+        secondaryTapID = .unknown
         secondaryTapDescription = nil
 
-        // Clean up primary resources
-        if aggregateDeviceID.isValid {
-            var err = AudioDeviceStop(aggregateDeviceID, deviceProcID)
-            if err != noErr { logger.warning("Failed to stop device: \(err)") }
-
-            if let deviceProcID {
-                err = AudioDeviceDestroyIOProcID(aggregateDeviceID, deviceProcID)
-                if err != noErr { logger.warning("Failed to destroy IO proc: \(err)") }
-                self.deviceProcID = nil
+        // Dispatch blocking teardown to background queue
+        DispatchQueue.global(qos: .utility).async {
+            // Clean up secondary resources if they exist
+            if secAggregate.isValid {
+                AudioDeviceStop(secAggregate, secProcID)
+                if let procID = secProcID {
+                    AudioDeviceDestroyIOProcID(secAggregate, procID)
+                }
+                AudioHardwareDestroyAggregateDevice(secAggregate)
+            }
+            if secTap.isValid {
+                AudioHardwareDestroyProcessTap(secTap)
             }
 
-            err = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            if err != noErr { logger.warning("Failed to destroy aggregate device: \(err)") }
-            aggregateDeviceID = .unknown
-        }
-
-        if processTapID.isValid {
-            let err = AudioHardwareDestroyProcessTap(processTapID)
-            if err != noErr { logger.warning("Failed to destroy process tap: \(err)") }
-            processTapID = .unknown
+            // Clean up primary resources
+            if primaryAggregate.isValid {
+                AudioDeviceStop(primaryAggregate, primaryProcID)
+                if let procID = primaryProcID {
+                    AudioDeviceDestroyIOProcID(primaryAggregate, procID)
+                }
+                AudioHardwareDestroyAggregateDevice(primaryAggregate)
+            }
+            if primaryTap.isValid {
+                AudioHardwareDestroyProcessTap(primaryTap)
+            }
         }
 
         logger.info("Tap invalidated for \(self.app.name)")
