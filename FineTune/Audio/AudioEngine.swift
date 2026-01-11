@@ -130,6 +130,18 @@ final class AudioEngine {
         volumeState.getMute(for: app.id)
     }
 
+    /// Update EQ settings for an app
+    func setEQSettings(_ settings: EQSettings, for app: AudioApp) {
+        guard let tap = taps[app.id] else { return }
+        tap.updateEQSettings(settings)
+        settingsManager.setEQSettings(settings, for: app.persistenceIdentifier)
+    }
+
+    /// Get EQ settings for an app
+    func getEQSettings(for app: AudioApp) -> EQSettings {
+        return settingsManager.getEQSettings(for: app.persistenceIdentifier)
+    }
+
     func setDevice(for app: AudioApp, deviceUID: String) {
         guard appDeviceRouting[app.id] != deviceUID else { return }
         appDeviceRouting[app.id] = deviceUID
@@ -222,6 +234,11 @@ final class AudioEngine {
         do {
             try tap.activate()
             taps[app.id] = tap
+
+            // Load and apply persisted EQ settings
+            let eqSettings = settingsManager.getEQSettings(for: app.persistenceIdentifier)
+            tap.updateEQSettings(eqSettings)
+
             logger.debug("Created tap for \(app.name)")
         } catch {
             logger.error("Failed to create tap for \(app.name): \(error.localizedDescription)")
