@@ -87,6 +87,9 @@ final class ProcessTapController {
     private var rampCoefficient: Float = 0.0007  // Default, updated on activation
     private var secondaryRampCoefficient: Float = 0.0007  // For secondary tap during crossfade
 
+    // EQ processor (pre-allocated at activation)
+    private var eqProcessor: EQProcessor?
+
     var volume: Float {
         get { _volume }
         set { _volume = newValue }
@@ -95,6 +98,11 @@ final class ProcessTapController {
     var isMuted: Bool {
         get { _isMuted }
         set { _isMuted = newValue }
+    }
+
+    /// Update EQ settings (thread-safe, called from main thread)
+    func updateEQSettings(_ settings: EQSettings) {
+        eqProcessor?.updateSettings(settings)
     }
 
     // Target device UID (always explicit)
@@ -201,6 +209,9 @@ final class ProcessTapController {
         let rampTimeSeconds: Float = 0.030  // 30ms smoothing
         rampCoefficient = 1 - exp(-1 / (Float(sampleRate) * rampTimeSeconds))
         logger.debug("Ramp coefficient: \(self.rampCoefficient)")
+
+        // Initialize EQ processor with device sample rate
+        eqProcessor = EQProcessor(sampleRate: sampleRate)
 
         // Create IO proc with gain processing
         err = AudioDeviceCreateIOProcIDWithBlock(&deviceProcID, aggregateDeviceID, queue) { [weak self] inNow, inInputData, inInputTime, outOutputData, inOutputTime in
@@ -782,6 +793,16 @@ final class ProcessTapController {
 
                 outputSamples[i] = sample
             }
+
+            // Apply EQ processing (after volume, before output)
+            if let eqProcessor = eqProcessor {
+                let frameCount = sampleCount / 2  // Stereo frames
+                eqProcessor.process(
+                    input: outputSamples,
+                    output: outputSamples,
+                    frameCount: frameCount
+                )
+            }
         }
 
         // Store for next callback
@@ -872,6 +893,16 @@ final class ProcessTapController {
                 }
 
                 outputSamples[i] = sample
+            }
+
+            // Apply EQ processing (after volume, before output)
+            if let eqProcessor = eqProcessor {
+                let frameCount = sampleCount / 2  // Stereo frames
+                eqProcessor.process(
+                    input: outputSamples,
+                    output: outputSamples,
+                    frameCount: frameCount
+                )
             }
         }
 
