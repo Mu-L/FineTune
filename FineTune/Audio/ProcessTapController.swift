@@ -513,14 +513,10 @@ final class ProcessTapController {
         deviceProcID = secondaryDeviceProcID
         tapDescription = secondaryTapDescription
 
-        // Update ramp coefficient for new device sample rate
+        // Update ramp coefficient and EQ coefficients for new device sample rate
         if let deviceSampleRate = try? aggregateDeviceID.readNominalSampleRate() {
             let rampTimeSeconds: Float = 0.030
             rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * rampTimeSeconds))
-        }
-
-        // Update EQ coefficients for new device sample rate
-        if let deviceSampleRate = try? aggregateDeviceID.readNominalSampleRate() {
             eqProcessor?.updateSampleRate(deviceSampleRate)
         }
 
@@ -690,9 +686,10 @@ final class ProcessTapController {
         targetDeviceUID = newDeviceUID
         currentDeviceUID = outputUID
 
-        // Update ramp coefficient for new device
+        // Update ramp coefficient and EQ coefficients for new device sample rate
         if let deviceSampleRate = try? aggregateDeviceID.readNominalSampleRate() {
             rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * 0.030))
+            eqProcessor?.updateSampleRate(deviceSampleRate)
         }
     }
 
