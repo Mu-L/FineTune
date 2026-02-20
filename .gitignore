@@ -9,6 +9,7 @@ CLAUDE.md
 # Build artifacts
 build/
 DerivedData/
+tools/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 
