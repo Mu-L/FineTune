@@ -208,7 +208,7 @@ struct MenuBarPopupView: View {
                 expandedEQAppID = nil
             }
         } else {
-            NSApp.keyWindow?.orderOut(nil)
+            NSApp.keyWindow?.resignKey()
         }
     }
 
