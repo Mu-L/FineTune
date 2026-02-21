@@ -70,17 +70,20 @@ final class DeviceVolumeMonitor {
     #endif
 
     /// Volume listeners for each tracked output device
-    private var volumeListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
+    private nonisolated(unsafe) var volumeListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
     /// Mute listeners for each tracked output device
-    private var muteListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
-    private var defaultDeviceListenerBlock: AudioObjectPropertyListenerBlock?
-    private var systemDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+    private nonisolated(unsafe) var muteListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
+    private nonisolated(unsafe) var defaultDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+    private nonisolated(unsafe) var systemDeviceListenerBlock: AudioObjectPropertyListenerBlock?
 
     /// Volume listeners for each tracked input device
-    private var inputVolumeListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
+    private nonisolated(unsafe) var inputVolumeListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
     /// Mute listeners for each tracked input device
-    private var inputMuteListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
-    private var defaultInputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+    private nonisolated(unsafe) var inputMuteListeners: [AudioDeviceID: AudioObjectPropertyListenerBlock] = [:]
+    private nonisolated(unsafe) var defaultInputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+
+    /// Tracks which volume property address was successfully registered per device (for fallback removal)
+    private nonisolated(unsafe) var registeredVolumeAddresses: [AudioDeviceID: AudioObjectPropertyAddress] = [:]
 
     /// Flag to control the recursive observation loop
     private var isObservingDeviceList = false
@@ -551,10 +554,13 @@ final class DeviceVolumeMonitor {
         let trackedVolumeIDs = Set(volumeListeners.keys)
         let trackedMuteIDs = Set(muteListeners.keys)
 
-        // Add listeners for new devices
-        let newDeviceIDs = currentDeviceIDs.subtracting(trackedVolumeIDs)
-        for deviceID in newDeviceIDs {
+        // Add listeners for new devices (computed separately so mute retries independently)
+        let newVolumeIDs = currentDeviceIDs.subtracting(trackedVolumeIDs)
+        let newMuteIDs = currentDeviceIDs.subtracting(trackedMuteIDs)
+        for deviceID in newVolumeIDs {
             addVolumeListener(for: deviceID)
+        }
+        for deviceID in newMuteIDs {
             addMuteListener(for: deviceID)
         }
 
@@ -587,6 +593,7 @@ final class DeviceVolumeMonitor {
 
         volumeListeners[deviceID] = block
 
+        // Try VirtualMainVolume first (preferred — matches system slider)
         var address = volumeAddress
         let status = AudioObjectAddPropertyListenerBlock(
             deviceID,
@@ -595,17 +602,62 @@ final class DeviceVolumeMonitor {
             block
         )
 
-        if status != noErr {
-            logger.warning("Failed to add volume listener for device \(deviceID): \(status)")
-            volumeListeners.removeValue(forKey: deviceID)
+        if status == noErr {
+            return
         }
+
+        // Fallback 1: kAudioDevicePropertyVolumeScalar element 0 (master)
+        var fallbackAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let fallback1Status = AudioObjectAddPropertyListenerBlock(
+            deviceID,
+            &fallbackAddr,
+            .main,
+            block
+        )
+
+        if fallback1Status == noErr {
+            registeredVolumeAddresses[deviceID] = fallbackAddr
+            logger.debug("Volume listener fallback to VolumeScalar element 0 for device \(deviceID)")
+            return
+        }
+
+        // Fallback 2: kAudioDevicePropertyVolumeScalar element 1 (left channel)
+        var fallbackAddr2 = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: 1
+        )
+        let fallback2Status = AudioObjectAddPropertyListenerBlock(
+            deviceID,
+            &fallbackAddr2,
+            .main,
+            block
+        )
+
+        if fallback2Status == noErr {
+            registeredVolumeAddresses[deviceID] = fallbackAddr2
+            logger.debug("Volume listener fallback to VolumeScalar element 1 for device \(deviceID)")
+            return
+        }
+
+        logger.warning("Failed to add volume listener for device \(deviceID): \(status)")
+        volumeListeners.removeValue(forKey: deviceID)
     }
 
     private func removeVolumeListener(for deviceID: AudioDeviceID) {
         guard let block = volumeListeners[deviceID] else { return }
 
-        var address = volumeAddress
-        AudioObjectRemovePropertyListenerBlock(deviceID, &address, .main, block)
+        if let registeredAddr = registeredVolumeAddresses.removeValue(forKey: deviceID) {
+            var addr = registeredAddr
+            AudioObjectRemovePropertyListenerBlock(deviceID, &addr, .main, block)
+        } else {
+            var address = volumeAddress
+            AudioObjectRemovePropertyListenerBlock(deviceID, &address, .main, block)
+        }
         volumeListeners.removeValue(forKey: deviceID)
     }
 
@@ -924,8 +976,91 @@ final class DeviceVolumeMonitor {
         observe()
     }
 
-    deinit {
-        // Note: Can't call stop() here due to MainActor isolation
-        // Listeners will be cleaned up when the process exits
+    nonisolated deinit {
+        // HAL C functions don't require actor isolation
+
+        // Remove default output device listener
+        if let block = defaultDeviceListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(.system, &addr, .main, block)
+        }
+
+        // Remove system output device listener
+        if let block = systemDeviceListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(.system, &addr, .main, block)
+        }
+
+        // Remove default input device listener
+        if let block = defaultInputDeviceListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(.system, &addr, .main, block)
+        }
+
+        // Remove all output volume listeners
+        do {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            for (deviceID, block) in volumeListeners {
+                // Check if a fallback address was registered for this device
+                if let registeredAddr = registeredVolumeAddresses[deviceID] {
+                    var fallbackAddr = registeredAddr
+                    AudioObjectRemovePropertyListenerBlock(deviceID, &fallbackAddr, .main, block)
+                } else {
+                    AudioObjectRemovePropertyListenerBlock(deviceID, &addr, .main, block)
+                }
+            }
+        }
+
+        // Remove all output mute listeners
+        do {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            for (deviceID, block) in muteListeners {
+                AudioObjectRemovePropertyListenerBlock(deviceID, &addr, .main, block)
+            }
+        }
+
+        // Remove all input volume listeners
+        do {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            for (deviceID, block) in inputVolumeListeners {
+                AudioObjectRemovePropertyListenerBlock(deviceID, &addr, .main, block)
+            }
+        }
+
+        // Remove all input mute listeners
+        do {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            for (deviceID, block) in inputMuteListeners {
+                AudioObjectRemovePropertyListenerBlock(deviceID, &addr, .main, block)
+            }
+        }
     }
 }
