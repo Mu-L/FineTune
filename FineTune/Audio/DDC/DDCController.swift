@@ -25,7 +25,7 @@ final class DDCController {
     private var deviceUIDs: [AudioDeviceID: String] = [:]  // For persistence keying
     private var debounceTimers: [AudioDeviceID: DispatchWorkItem] = [:]
     private var probeWorkItem: DispatchWorkItem?
-    private var displayChangeObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var displayChangeObserver: NSObjectProtocol?
 
     private let ddcQueue = DispatchQueue(label: "com.finetune.ddc", qos: .utility)
     private let settingsManager: SettingsManager
@@ -36,6 +36,12 @@ final class DDCController {
 
     init(settingsManager: SettingsManager) {
         self.settingsManager = settingsManager
+    }
+
+    nonisolated deinit {
+        if let obs = displayChangeObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
     }
 
     // MARK: - Lifecycle
