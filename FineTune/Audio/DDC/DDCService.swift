@@ -11,6 +11,9 @@ import os
 
 /// Dynamically loads private IOAVService APIs from IOMobileFramebuffer framework.
 /// These are undocumented Apple Silicon APIs for I2C communication with displays.
+// THREAD SAFETY: ensureLoaded() must only be called from ddcQueue (serial).
+// This constraint is currently enforced by all callers going through
+// discoverServices() which runs on ddcQueue.
 enum IOAVServiceLoader {
     typealias CreateWithServiceFn = @convention(c) (CFAllocator?, io_service_t) -> Unmanaged<CFTypeRef>?
     typealias ReadI2CFn = @convention(c) (CFTypeRef, UInt32, UInt32, UnsafeMutablePointer<UInt8>, UInt32) -> IOReturn
