@@ -28,7 +28,8 @@ enum BiquadMath {
         let a2 = 1.0 - alpha / A
 
         // Normalize by a0 for vDSP_biquad format
-        // Note: vDSP uses difference equation y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] + a1*y[n-1] + a2*y[n-2]
+        // vDSP difference equation: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+        // Coefficients are passed as-is (vDSP internally subtracts a1/a2)
         return [
             b0 / a0,
             b1 / a0,
@@ -50,6 +51,14 @@ enum BiquadMath {
         allCoeffs.reserveCapacity(50)
 
         for (index, frequency) in EQSettings.frequencies.enumerated() {
+            // Bands at or above Nyquist cannot exist in the signal — bypass with unity gain.
+            // Without this guard, omega > pi produces negative alpha, yielding unstable
+            // biquad coefficients (poles outside the unit circle) that cause exponentially
+            // growing output heard as robotic/static distortion.
+            if frequency >= sampleRate / 2.0 {
+                allCoeffs.append(contentsOf: [1.0, 0.0, 0.0, 0.0, 0.0])
+                continue
+            }
             let bandCoeffs = peakingEQCoefficients(
                 frequency: frequency,
                 gainDB: gains[index],
