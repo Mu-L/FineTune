@@ -21,6 +21,10 @@ final class EQProcessor: @unchecked Sendable {
     // Lock-free state for RT-safe access
     private nonisolated(unsafe) var _eqSetup: vDSP_biquad_Setup?
     private nonisolated(unsafe) var _isEnabled: Bool = true
+    /// Pre-EQ attenuation to prevent post-EQ clipping when bands are boosted.
+    /// Computed as: pow(10, -maxBoostDB / 20) when any band has positive gain.
+    /// Audio callback reads this atomically; main thread writes in updateSettings().
+    private nonisolated(unsafe) var _preampAttenuation: Float = 1.0
 
     // Pre-allocated delay buffers (raw pointers for RT-safety)
     private let delayBufferL: UnsafeMutablePointer<Float>
@@ -30,6 +34,9 @@ final class EQProcessor: @unchecked Sendable {
     var isEnabled: Bool {
         get { _isEnabled }
     }
+
+    /// Pre-EQ gain reduction to prevent clipping (RT-safe read)
+    var preampAttenuation: Float { _preampAttenuation }
 
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
@@ -58,6 +65,10 @@ final class EQProcessor: @unchecked Sendable {
         _isEnabled = settings.isEnabled
         _currentSettings = settings
 
+        // Compute pre-EQ attenuation to prevent post-EQ clipping
+        let maxBoostDB = settings.clampedGains.max() ?? 0
+        _preampAttenuation = maxBoostDB > 0 ? pow(10.0, -maxBoostDB / 20.0) : 1.0
+
         let coefficients = BiquadMath.coefficientsForAllBands(
             gains: settings.clampedGains,
             sampleRate: sampleRate
@@ -72,8 +83,9 @@ final class EQProcessor: @unchecked Sendable {
         _eqSetup = newSetup
 
         // Destroy old setup on background queue (after audio thread has moved on)
+        // 500ms margin: worst-case buffer is 4096 frames @ 44.1kHz = 93ms, plus scheduling jitter
         if let old = oldSetup {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.2) {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
                 vDSP_biquad_DestroySetup(old)
             }
         }
@@ -89,6 +101,10 @@ final class EQProcessor: @unchecked Sendable {
     ///
     /// - Parameter newRate: The new device sample rate in Hz (e.g., 44100, 48000, 96000)
     func updateSampleRate(_ newRate: Double) {
+        // Development-only check (stripped in Release). Safe because callers are always @MainActor.
+        // PRECONDITION: Caller must ensure EQ is bypassed in audio callback before calling
+        // (crossfade active or not yet activated). The memset at lines below races with
+        // vDSP_biquad if audio is flowing through the processor.
         dispatchPrecondition(condition: .onQueue(.main))
         let oldRate = sampleRate
         guard newRate != sampleRate else { return }  // No change needed
@@ -119,8 +135,9 @@ final class EQProcessor: @unchecked Sendable {
         _eqSetup = newSetup
 
         // Destroy old setup asynchronously (avoid blocking)
+        // 500ms margin: worst-case buffer is 4096 frames @ 44.1kHz = 93ms, plus scheduling jitter
         if let old = oldSetup {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.2) {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
                 vDSP_biquad_DestroySetup(old)
             }
         }
@@ -140,14 +157,18 @@ final class EQProcessor: @unchecked Sendable {
         let enabled = _isEnabled
         let setup = _eqSetup
 
-        // Bypass: copy input to output
+        // Bypass: copy input to output (skip if already in-place to avoid memcpy UB on overlap)
         guard enabled, let setup = setup else {
-            memcpy(output, input, frameCount * 2 * MemoryLayout<Float>.size)
+            if input != UnsafePointer(output) {
+                memcpy(output, input, frameCount * 2 * MemoryLayout<Float>.size)
+            }
             return
         }
 
-        // Copy input to output first (in-place processing)
-        memcpy(output, input, frameCount * 2 * MemoryLayout<Float>.size)
+        // Copy input to output first for in-place processing (skip if same buffer)
+        if input != UnsafePointer(output) {
+            memcpy(output, input, frameCount * 2 * MemoryLayout<Float>.size)
+        }
 
         // Process left channel (stride=2, starts at index 0)
         vDSP_biquad(
