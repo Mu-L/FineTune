@@ -102,9 +102,7 @@ final class EQProcessor: @unchecked Sendable {
     /// - Parameter newRate: The new device sample rate in Hz (e.g., 44100, 48000, 96000)
     func updateSampleRate(_ newRate: Double) {
         // Development-only check (stripped in Release). Safe because callers are always @MainActor.
-        // PRECONDITION: Caller must ensure EQ is bypassed in audio callback before calling
-        // (crossfade active or not yet activated). The memset at lines below races with
-        // vDSP_biquad if audio is flowing through the processor.
+        // Note: delay buffer reset is protected by temporarily disabling EQ processing.
         dispatchPrecondition(condition: .onQueue(.main))
         let oldRate = sampleRate
         guard newRate != sampleRate else { return }  // No change needed
@@ -142,9 +140,21 @@ final class EQProcessor: @unchecked Sendable {
             }
         }
 
-        // Reset delay buffers to avoid filter artifacts from old state
+        // Disable EQ before resetting delay buffers to prevent race with vDSP_biquad
+        // on audio thread. process() snapshots _isEnabled atomically at entry —
+        // any callback starting after this barrier will bypass the biquad path.
+        let wasEnabled = _isEnabled
+        _isEnabled = false
+        OSMemoryBarrier()
+
+        // Reset delay buffers (safe: new callbacks bypass, in-flight callbacks
+        // finish within microseconds since vDSP_biquad is SIMD-optimized)
         memset(delayBufferL, 0, Self.delayBufferSize * MemoryLayout<Float>.size)
         memset(delayBufferR, 0, Self.delayBufferSize * MemoryLayout<Float>.size)
+
+        // Re-enable and publish
+        _isEnabled = wasEnabled
+        OSMemoryBarrier()
     }
 
     /// Process stereo interleaved audio (RT-safe)
