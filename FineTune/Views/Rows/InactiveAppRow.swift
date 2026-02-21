@@ -28,11 +28,14 @@ struct InactiveAppRow: View {
     let onUnpin: () -> Void  // Inactive apps can only be unpinned
     let eqSettings: EQSettings
     let onEQChange: (EQSettings) -> Void
+    let compressorSettings: CompressorSettings
+    let onCompressorChange: (CompressorSettings) -> Void
     let isEQExpanded: Bool
     let onEQToggle: () -> Void
 
     @State private var isPinButtonHovered = false
     @State private var localEQSettings: EQSettings
+    @State private var localCompressorSettings: CompressorSettings
 
     /// Pin button color - always visible for inactive (pinned) apps
     private var pinButtonColor: Color {
@@ -64,6 +67,8 @@ struct InactiveAppRow: View {
         onUnpin: @escaping () -> Void,
         eqSettings: EQSettings = EQSettings(),
         onEQChange: @escaping (EQSettings) -> Void = { _ in },
+        compressorSettings: CompressorSettings = CompressorSettings(),
+        onCompressorChange: @escaping (CompressorSettings) -> Void = { _ in },
         isEQExpanded: Bool = false,
         onEQToggle: @escaping () -> Void = {}
     ) {
@@ -87,9 +92,12 @@ struct InactiveAppRow: View {
         self.onUnpin = onUnpin
         self.eqSettings = eqSettings
         self.onEQChange = onEQChange
+        self.compressorSettings = compressorSettings
+        self.onCompressorChange = onCompressorChange
         self.isEQExpanded = isEQExpanded
         self.onEQToggle = onEQToggle
         self._localEQSettings = State(initialValue: eqSettings)
+        self._localCompressorSettings = State(initialValue: compressorSettings)
     }
 
     var body: some View {
@@ -159,18 +167,25 @@ struct InactiveAppRow: View {
             // EQ panel
             EQPanelView(
                 settings: $localEQSettings,
+                compressorSettings: $localCompressorSettings,
                 onPresetSelected: { preset in
                     localEQSettings = preset.settings
                     onEQChange(preset.settings)
                 },
                 onSettingsChanged: { settings in
                     onEQChange(settings)
+                },
+                onCompressorSettingsChanged: { settings in
+                    onCompressorChange(settings)
                 }
             )
             .padding(.top, DesignTokens.Spacing.sm)
         }
         .onChange(of: eqSettings) { _, newValue in
             localEQSettings = newValue
+        }
+        .onChange(of: compressorSettings) { _, newValue in
+            localCompressorSettings = newValue
         }
     }
 }

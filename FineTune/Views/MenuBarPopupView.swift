@@ -576,6 +576,10 @@ struct MenuBarPopupView: View {
                 onEQChange: { settings in
                     audioEngine.setEQSettings(settings, for: app)
                 },
+                compressorSettings: audioEngine.getCompressorSettings(for: app),
+                onCompressorChange: { settings in
+                    audioEngine.setCompressorSettings(settings, for: app)
+                },
                 isEQExpanded: expandedEQAppID == displayableApp.id,
                 onEQToggle: {
                     toggleEQ(for: displayableApp.id, scrollProxy: scrollProxy)
@@ -625,6 +629,10 @@ struct MenuBarPopupView: View {
             eqSettings: audioEngine.getEQSettingsForInactive(identifier: identifier),
             onEQChange: { settings in
                 audioEngine.setEQSettingsForInactive(settings, identifier: identifier)
+            },
+            compressorSettings: audioEngine.getCompressorSettingsForInactive(identifier: identifier),
+            onCompressorChange: { settings in
+                audioEngine.setCompressorSettingsForInactive(settings, identifier: identifier)
             },
             isEQExpanded: expandedEQAppID == displayableApp.id,
             onEQToggle: {
